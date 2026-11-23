@@ -16,10 +16,11 @@ export async function loadHandLandmarker() {
 
 function openWorker(signal) {
   const worker = new Worker(new URL('./hand-worker.js', import.meta.url));
-  let pending, closed = false;
+  let pending, watchdog, closed = false;
   const close = () => {
     if (closed) return;
     closed = true;
+    clearTimeout(watchdog);
     worker.terminate();
     signal.removeEventListener('abort', close);
     pending?.reject(new Error('Hand tracker stopped'));
@@ -27,7 +28,9 @@ function openWorker(signal) {
   };
 
   const ready = new Promise((resolve, reject) => { pending = {resolve, reject}; });
+  watchdog = setTimeout(close, 8000);
   worker.onmessage = ({data}) => {
+    clearTimeout(watchdog);
     const request = pending;
     pending = undefined;
     if (data.ok) request?.resolve(data.palm);
@@ -48,6 +51,7 @@ function openWorker(signal) {
         pending = {resolve, reject};
         try {
           worker.postMessage({bitmap, timestamp}, [bitmap]);
+          watchdog = setTimeout(close, 4000);
         } catch (error) {
           bitmap.close();
           pending = undefined;
@@ -68,7 +72,12 @@ export async function openHandTracker(signal) {
     try { return await openWorker(signal); } catch { signal.throwIfAborted(); }
   }
 
+  signal.throwIfAborted();
   const detector = await loadHandLandmarker();
+  if (signal.aborted) {
+    detector.close();
+    signal.throwIfAborted();
+  }
   return {
     mode: 'main',
     sample(video, timestamp) {

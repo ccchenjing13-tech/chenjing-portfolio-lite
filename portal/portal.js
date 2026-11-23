@@ -23,7 +23,7 @@ export function mountPortal(root, finish) {
   if (debug) {
     debugLabel = document.createElement('div');
     debugLabel.className = 'portal__gesture-debug';
-    debugLabel.textContent = '等待摄像头';
+    debugLabel.textContent = '正在启动开屏';
     root.append(debugLabel);
   }
 
@@ -33,7 +33,9 @@ export function mountPortal(root, finish) {
     root.dataset.cameraState = state;
     retry.hidden = !canRetry;
     const prompts = {
-      [CAMERA_STATE.INITIALIZING]: '正在连接你的宇宙……',
+      [CAMERA_STATE.INITIALIZING]: '正在加载手势识别…',
+      [CAMERA_STATE.WAITING_FOR_FRAMES]: '正在接收摄像头画面…',
+      [CAMERA_STATE.PAUSED]: '切回此页面即可继续手势探索',
       [CAMERA_STATE.PERMISSION_REQUIRED]: awaitingActivation
         ? '也可以用鼠标或触摸探索银河'
         : '允许使用摄像头，便可以用手掌探索银河',
@@ -49,7 +51,7 @@ export function mountPortal(root, finish) {
       [APPROACH_STATE.PALM_OPEN]: '向前推，穿越银河'
     };
     const cameraActive = state === CAMERA_STATE.TRACKING || state === CAMERA_STATE.HAND_LOST;
-    const text = (cameraActive && approachPrompts[approach.state]) || prompts[state];
+    const text = (cameraActive && approachPrompts[approach.state]) || cameraHelp(cameraStatus) || prompts[state];
     if (instructions.textContent !== text) instructions.textContent = text;
   }
 
@@ -68,8 +70,34 @@ export function mountPortal(root, finish) {
     syncApproach();
   }
 
+  function cameraHelp({reason, errorName}) {
+    if (reason === 'permission-pending') return '仍在等摄像头授权；若没有弹窗，可用系统浏览器打开';
+    if (reason === 'policy' || reason === 'unsupported') return '当前预览无法调用摄像头，可用系统浏览器打开';
+    if (reason === 'insecure') return '此网址不支持摄像头，可改用本地预览地址';
+    if (reason === 'no-frames') return '已授权，但摄像头未送来画面';
+    if (reason === 'tracker-timeout') return '手势识别加载超时 · 可拖动探索银河';
+    if (reason === 'ended') return '摄像头已断开 · 可拖动探索银河';
+    if (errorName === 'NotFoundError') return '没有找到摄像头 · 可拖动探索银河';
+    if (errorName === 'NotReadableError') return '无法打开摄像头，检查它是否被其他应用占用';
+  }
+
   function showCameraStatus(status) {
     cameraStatus = status;
+    if (debugLabel) {
+      const labels = {
+        [CAMERA_STATE.PERMISSION_REQUIRED]: status.awaitingActivation ? '已授权，浏览器要求点按启用' : '等待浏览器授权',
+        [CAMERA_STATE.INITIALIZING]: '已授权，正在加载识别器',
+        [CAMERA_STATE.WAITING_FOR_FRAMES]: '正在等待摄像头送来第一帧',
+        [CAMERA_STATE.TRACKING]: '摄像头正在识别手掌',
+        [CAMERA_STATE.HAND_LOST]: '摄像头已接通，暂未检测到手掌',
+        [CAMERA_STATE.PERMISSION_DENIED]: '摄像头授权被拒绝或受限',
+        [CAMERA_STATE.CAMERA_UNAVAILABLE]: '摄像头不可用',
+        [CAMERA_STATE.PAUSED]: '预览在后台，摄像头已暂停',
+        [CAMERA_STATE.ERROR]: '手势识别启动失败'
+      };
+      const detail = status.errorName ? ` · ${status.errorName}` : '';
+      debugLabel.textContent = (cameraHelp(status) || labels[status.state]) + detail;
+    }
     if (status.state === CAMERA_STATE.ERROR || status.state === CAMERA_STATE.CAMERA_UNAVAILABLE) cancelApproach();
     renderInstructions();
   }
@@ -150,6 +178,7 @@ export function mountPortal(root, finish) {
     enter.disabled = false;
     root.classList.remove('is-ready');
     message.textContent = text;
+    if (debugLabel) debugLabel.textContent = '三维场景未启动；摄像头未请求';
     message.hidden = false;
     instructions.hidden = retry.hidden = true;
     container.removeAttribute('tabindex');

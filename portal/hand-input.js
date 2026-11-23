@@ -4,6 +4,8 @@ import {openHandTracker} from './hand-landmarker.js';
 export const CAMERA_STATE = Object.freeze({
   INITIALIZING: 'INITIALIZING',
   PERMISSION_REQUIRED: 'PERMISSION_REQUIRED',
+  WAITING_FOR_FRAMES: 'WAITING_FOR_FRAMES',
+  PAUSED: 'PAUSED',
   TRACKING: 'TRACKING',
   HAND_LOST: 'HAND_LOST',
   PERMISSION_DENIED: 'PERMISSION_DENIED',
@@ -11,13 +13,16 @@ export const CAMERA_STATE = Object.freeze({
   ERROR: 'ERROR'
 });
 
+const STARTUP_TIMEOUTS = {permissionMs: 6000, trackerMs: 22000, framesMs: 4000};
+
 const emptyGesture = () => ({type: 'NO_HAND', stableMs: 0, scale: null});
 
 export function createHandInput({
   canControl, onRotate, onState, onGesture, onHandSample = () => {},
   onDiagnostics,
   loadTracker = openHandTracker,
-  config = GESTURE_CONFIG
+  config = GESTURE_CONFIG,
+  startupTimeouts = STARTUP_TIMEOUTS
 }) {
   const motion = createGestureMotion(config);
   const lifetime = new AbortController();
@@ -29,7 +34,7 @@ export function createHandInput({
   let hasTracked = false;
   let currentGesture = emptyGesture();
   let currentState;
-  let timeout, frameCallback;
+  let timeout, frameCallback, stageTimeout;
   let playback = 0;
   let inferencePending = false;
   let minimumInterval = 1000 / config.framesPerSecond;
@@ -55,6 +60,7 @@ export function createHandInput({
 
   function pause() {
     playback++;
+    if (video && tracker) clearStageTimeout();
     clearSchedule();
     resetGesture();
     video?.pause();
@@ -62,6 +68,7 @@ export function createHandInput({
   }
 
   function release() {
+    clearStageTimeout();
     pause();
     const tracks = stream?.getTracks();
     stream = undefined;
@@ -77,10 +84,12 @@ export function createHandInput({
     tracker = undefined;
   }
 
-  function fail(state) {
+  function fail(state, detail) {
     release();
-    status(state);
+    status(state, detail);
   }
+
+  function clearStageTimeout() { clearTimeout(stageTimeout); }
 
   function clearSchedule() {
     clearTimeout(timeout);
@@ -114,6 +123,7 @@ export function createHandInput({
     const now = performance.now();
     try {
       if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.currentTime !== lastVideoTime) {
+        clearStageTimeout();
         lastVideoTime = video.currentTime;
         inferencePending = true;
         const palm = await tracker.sample(video, now);
@@ -152,14 +162,14 @@ export function createHandInput({
           lastHandSample = now;
           onHandSample(null, now);
         }
-        if (now - lastOpen >= config.handLostMs) {
+        if (lastVideoTime >= 0 && now - lastOpen >= config.handLostMs) {
           if (currentGesture.type !== 'NO_HAND') resetGesture();
           status(CAMERA_STATE.HAND_LOST);
         }
         schedule(8);
       }
     } catch {
-      if (attempt === playback && !stopped) fail(CAMERA_STATE.ERROR);
+      if (attempt === playback && !stopped) fail(CAMERA_STATE.ERROR, {reason: 'inference'});
     } finally {
       inferencePending = false;
     }
@@ -168,6 +178,11 @@ export function createHandInput({
   async function resume() {
     if (stopped || document.hidden || !video || !tracker) return;
     const attempt = ++playback;
+    clearStageTimeout();
+    status(CAMERA_STATE.WAITING_FOR_FRAMES);
+    stageTimeout = setTimeout(() => {
+      if (attempt === playback && !document.hidden) status(CAMERA_STATE.WAITING_FOR_FRAMES, {reason: 'no-frames'});
+    }, startupTimeouts.framesMs);
     stream.getVideoTracks().forEach(track => { track.enabled = true; });
     try {
       await video.play();
@@ -175,7 +190,6 @@ export function createHandInput({
       lastVideoTime = -1;
       debugAt = performance.now();
       debugFrames = 0;
-      status(CAMERA_STATE.HAND_LOST);
       schedule();
     } catch (error) {
       if (attempt !== playback || stopped || document.hidden) return;
@@ -185,20 +199,26 @@ export function createHandInput({
         pause();
         status(CAMERA_STATE.PERMISSION_REQUIRED, {awaitingActivation: true});
       } else {
-        fail(CAMERA_STATE.ERROR);
+        fail(CAMERA_STATE.ERROR, {reason: 'playback', errorName: error.name});
       }
     }
   }
 
   async function requestCamera() {
     const policy = document.permissionsPolicy ?? document.featurePolicy;
-    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia
-      || policy?.allowsFeature?.('camera') === false) {
-      status(CAMERA_STATE.CAMERA_UNAVAILABLE);
+    if (policy?.allowsFeature?.('camera') === false) {
+      status(CAMERA_STATE.CAMERA_UNAVAILABLE, {reason: 'policy'});
+      return;
+    }
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+      status(CAMERA_STATE.CAMERA_UNAVAILABLE, {reason: !window.isSecureContext ? 'insecure' : 'unsupported'});
       return;
     }
 
     status(CAMERA_STATE.PERMISSION_REQUIRED);
+    stageTimeout = setTimeout(() => {
+      if (!stopped) status(CAMERA_STATE.PERMISSION_REQUIRED, {reason: 'permission-pending'});
+    }, startupTimeouts.permissionMs);
     let acquired;
     try {
       acquired = await navigator.mediaDevices.getUserMedia({
@@ -206,20 +226,29 @@ export function createHandInput({
         video: {facingMode: {ideal: 'user'}, width: {ideal: 640}, height: {ideal: 480}, frameRate: {ideal: 30, max: 30}}
       });
     } catch (error) {
+      clearStageTimeout();
       if (stopped) return;
       if (error.name === 'NotAllowedError' || error.name === 'SecurityError') {
-        let permission;
-        try { permission = (await navigator.permissions?.query({name: 'camera'}))?.state; } catch { /* optional API */ }
-        if (stopped) return;
-        retryAllowed = !retried && permission !== 'denied' && error.name === 'NotAllowedError';
-        status(CAMERA_STATE.PERMISSION_DENIED);
+        retryAllowed = !retried && error.name === 'NotAllowedError';
+        status(CAMERA_STATE.PERMISSION_DENIED, {errorName: error.name});
+        // The optional permission query must not delay reporting the getUserMedia rejection.
+        void (async () => {
+          try {
+            const permission = await navigator.permissions?.query({name: 'camera'});
+            if (!stopped && permission?.state === 'denied' && !retried) {
+              retryAllowed = false;
+              status(CAMERA_STATE.PERMISSION_DENIED, {errorName: error.name});
+            }
+          } catch { /* optional API */ }
+        })();
       } else if (['NotFoundError', 'NotReadableError', 'OverconstrainedError', 'AbortError'].includes(error.name)) {
-        status(CAMERA_STATE.CAMERA_UNAVAILABLE);
+        status(CAMERA_STATE.CAMERA_UNAVAILABLE, {errorName: error.name});
       } else {
-        status(CAMERA_STATE.ERROR);
+        status(CAMERA_STATE.ERROR, {reason: 'request', errorName: error.name});
       }
       return;
     }
+    clearStageTimeout();
     if (stopped) {
       acquired.getTracks().forEach(track => track.stop());
       return;
@@ -232,15 +261,16 @@ export function createHandInput({
       return;
     }
     track.enabled = false;
-    track.addEventListener('ended', () => fail(CAMERA_STATE.CAMERA_UNAVAILABLE), {signal: lifetime.signal, once: true});
+    track.addEventListener('ended', () => fail(CAMERA_STATE.CAMERA_UNAVAILABLE, {reason: 'ended'}), {signal: lifetime.signal, once: true});
     video = document.createElement('video');
     video.muted = true;
     video.playsInline = true;
-    video.hidden = true;
+    video.className = 'portal-camera-source';
     video.setAttribute('aria-hidden', 'true');
     document.body.append(video);
     video.srcObject = stream;
     status(CAMERA_STATE.INITIALIZING);
+    stageTimeout = setTimeout(() => fail(CAMERA_STATE.ERROR, {reason: 'tracker-timeout'}), startupTimeouts.trackerMs);
     trackerLifetime = new AbortController();
     try {
       const loaded = await loadTracker(trackerLifetime.signal);
@@ -248,16 +278,21 @@ export function createHandInput({
         loaded.close();
         return;
       }
+      clearStageTimeout();
       tracker = loaded;
       minimumInterval = 1000 / (tracker.mode === 'main' ? Math.min(12, config.framesPerSecond) : config.framesPerSecond);
       void resume();
     } catch {
-      if (!stopped && stream === acquired) fail(CAMERA_STATE.ERROR);
+      if (!stopped && stream === acquired) fail(CAMERA_STATE.ERROR, {reason: 'tracker'});
     }
   }
 
   function start() {
-    if (stopped || started || document.hidden) return;
+    if (stopped || started) return;
+    if (document.hidden) {
+      status(CAMERA_STATE.PAUSED);
+      return;
+    }
     started = true;
     startTask = requestCamera().finally(() => { startTask = undefined; });
   }
@@ -265,6 +300,7 @@ export function createHandInput({
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       pause();
+      if (stream && tracker && !retryAllowed) status(CAMERA_STATE.PAUSED);
     } else if (!retryAllowed && !startTask && stream && tracker) {
       void resume();
     } else {
