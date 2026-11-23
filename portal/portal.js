@@ -1,8 +1,8 @@
 import {CAMERA_STATE, createHandInput} from './hand-input.js';
 import {APPROACH_STATE, createGestureApproach} from './gesture-approach.js';
-import {createEntranceHold, FLIGHT_CONFIG, FLIGHT_STATE, sampleFlythrough} from './flythrough.js';
+import {FLIGHT_CONFIG, FLIGHT_STATE, sampleFlythrough} from './flythrough.js';
 
-const explorePrompt = '移动手掌旋转 · 握拳后可推进';
+const explorePrompt = '移动手掌旋转 · 握拳，张掌向前推';
 
 export function mountPortal(root, finish) {
   const container = root.querySelector('#galaxy');
@@ -14,11 +14,9 @@ export function mountPortal(root, finish) {
   const lifetime = new AbortController();
   const {signal} = lifetime;
   const approach = createGestureApproach();
-  const entranceHold = createEntranceHold();
   let galaxy, handInput, cameraStatus, flightStart, fade, fadeTimer;
   let disposed = false;
   let flightState;
-  let entranceReady = false;
 
   function renderInstructions() {
     if (!cameraStatus || flightState) return;
@@ -37,12 +35,9 @@ export function mountPortal(root, finish) {
       [CAMERA_STATE.ERROR]: '手势识别暂不可用 · 可拖动探索银河'
     };
     const approachPrompts = {
-      [APPROACH_STATE.FIST_CONFIRMING]: '保持握拳，等待确认',
-      [APPROACH_STATE.ARMED]: '握拳已确认 · 原地张开手掌',
-      [APPROACH_STATE.PALM_OPEN]: '保持张掌不动，正在校准距离',
-      [APPROACH_STATE.PUSHING]: galaxy?.approachProgress >= FLIGHT_CONFIG.entranceProgress
-        ? '保持手掌，准备穿越' : '已就绪 · 手掌向摄像头缓慢推进',
-      [APPROACH_STATE.RETURNING]: '正在返回自由探索'
+      [APPROACH_STATE.FIST_SEEN]: '握拳，再张掌向前推',
+      [APPROACH_STATE.ARMED]: '张开手掌，顺势向前推',
+      [APPROACH_STATE.PALM_OPEN]: '向前推，穿越银河'
     };
     const cameraActive = state === CAMERA_STATE.TRACKING || state === CAMERA_STATE.HAND_LOST;
     const text = (cameraActive && approachPrompts[approach.state]) || prompts[state];
@@ -51,29 +46,16 @@ export function mountPortal(root, finish) {
 
   function syncApproach() {
     if (!galaxy || flightState) return;
-    if (galaxy.approachProgress === 0) approach.finishReturn();
-    galaxy.setApproachTarget(approach.target);
-    galaxy.lockGestureRotation(approach.rotationLocked);
-    const atEntrance = approach.state === APPROACH_STATE.PUSHING
-      && galaxy.approachProgress >= FLIGHT_CONFIG.entranceProgress;
-    if (root.dataset.approachState === approach.state && root.dataset.atEntrance === String(atEntrance)) return;
+    if (root.dataset.approachState === approach.state) return;
     root.dataset.approachState = approach.state;
-    root.dataset.atEntrance = String(atEntrance);
     renderInstructions();
     root.dispatchEvent(new CustomEvent('portal-approachchange', {bubbles: true, detail: {
-      state: approach.state,
-      progress: galaxy.approachProgress,
-      targetProgress: approach.target,
-      cameraDistance: galaxy.approachCameraDistance,
-      endDistance: galaxy.approachEndDistance,
-      atEntrance
+      state: approach.state
     }}));
   }
 
   function cancelApproach() {
-    entranceReady = false;
-    entranceHold(performance.now(), false, 0, 0);
-    approach.cancel();
+    approach.reset();
     syncApproach();
   }
 
@@ -133,7 +115,7 @@ export function mountPortal(root, finish) {
   function onGalaxyFrame(time) {
     if (!flightState) {
       syncApproach();
-      if (entranceReady) startEnterTransition();
+      if (approach.state === APPROACH_STATE.COMMITTED) startEnterTransition();
     }
     if (flightStart === undefined) return;
     const sample = sampleFlythrough(time - flightStart);
@@ -184,8 +166,7 @@ export function mountPortal(root, finish) {
   }, {signal});
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) return;
-    entranceReady = false;
-    entranceHold(performance.now(), false, 0, 0);
+    cancelApproach();
     if (flightState) complete({focus: false});
   }, {signal});
 
@@ -198,18 +179,15 @@ export function mountPortal(root, finish) {
       root.classList.add('is-ready');
       syncApproach();
       handInput = createHandInput({
-        canControl: () => !approach.rotationLocked && galaxy?.canAcceptGesture(),
+        canControl: () => approach.state !== APPROACH_STATE.COMMITTED && galaxy?.canAcceptGesture(),
         onRotate: (yaw, pitch) => galaxy?.rotateFromGesture(yaw, pitch),
         onState: showCameraStatus,
         onGesture: detail => root.dispatchEvent(new CustomEvent('portal-gesturechange', {detail, bubbles: true})),
         onHandSample: (palm, time) => {
           if (!galaxy || flightState) return;
           const usable = galaxy.canAcceptGesture() ? palm : null;
-          approach.sample(usable, time, galaxy.approachProgress);
+          approach.sample(usable, time);
           syncApproach();
-          // Finish the dwell only on a new open-palm sample, never on stale RAF frames.
-          const eligible = approach.state === APPROACH_STATE.PUSHING && usable?.type === 'OPEN_PALM';
-          entranceReady = entranceHold(performance.now(), eligible, galaxy.approachProgress, approach.target);
         }
       });
       handInput.start();

@@ -1,28 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {createEntranceHold, FLIGHT_CONFIG as config, FLIGHT_STATE, sampleFlythrough} from '../flythrough.js';
-
-test('entrance needs a stable threshold on rendered and target progress while the hand is present', () => {
-  const ready = createEntranceHold();
-  assert.equal(ready(0, true, .979, 1), false);
-  assert.equal(ready(20, true, 1, .979), false);
-  assert.equal(ready(100, true, .98, 1), false);
-  assert.equal(ready(399, true, .988, 1), false);
-  assert.equal(ready(400, true, 1, 1), true);
-  assert.equal(ready(420, false, 1, 1), false);
-  assert.equal(ready(700, true, 1, 1), false);
-  assert.equal(ready(999, true, 1, 1), false);
-  assert.equal(ready(1000, true, 1, 1), true);
-});
-
-test('a slower tracker may confirm the dwell, but a gap with no fresh sample resets it', () => {
-  const ready = createEntranceHold();
-  assert.equal(ready(0, true, 1, 1), false);
-  assert.equal(ready(360, true, 1, 1), true);
-  assert.equal(ready(1000, true, 1, 1), false);
-  assert.equal(ready(1299, true, 1, 1), false);
-  assert.equal(ready(1300, true, 1, 1), true);
-});
+import {FLIGHT_CONFIG as config, FLIGHT_STATE, sampleFlythrough} from '../flythrough.js';
 
 test('flythrough starts from the exact inherited position and accelerates until it passes the core', () => {
   assert.equal(sampleFlythrough(-10).travel, 0);
@@ -30,6 +8,7 @@ test('flythrough starts from the exact inherited position and accelerates until 
     travel: 0, controls: 1, glow: 0, radius: 14, overlay: 1,
     state: FLIGHT_STATE.ENTERING, done: false
   });
+  assert.ok(sampleFlythrough(100).travel > .014, "The camera moves as soon as the gesture commits");
   let previous = 0;
   let previousStep = 0;
   for (let elapsed = 100; elapsed <= 2000; elapsed += 100) {

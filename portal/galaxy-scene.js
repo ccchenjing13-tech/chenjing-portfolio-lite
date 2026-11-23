@@ -2,7 +2,6 @@ import * as THREE from './vendor/three-r180/three.module.min.js';
 import {generateGalaxy, generateOuterStars, generateSpiralBands, seededRandom} from './galaxy-data.js';
 import {createGalaxyRotation, dragToRotation} from './galaxy-rotation.js';
 import {GESTURE_CONFIG} from './gesture-motion.js';
-import {approachEndDistance, easeApproach} from './gesture-approach.js';
 
 const FRAMING_RADIUS = 8.1;
 const WIDE_CAMERA_DISTANCE = 22.6;
@@ -196,10 +195,7 @@ export function createGalaxy(container, {onFrame = () => {}, onManualInput = () 
   let yawVelocity = 0;
   let pitchVelocity = 0;
   let controlMode = 'interactive';
-  let gestureRotationLocked = false;
   let baseCameraDistance = camera.position.z;
-  let cameraTarget = 0;
-  let cameraProgress = 0;
   let flightOrigin, flightEnd;
   let gestureHasControl = false;
   let manualUntil = 0;
@@ -218,19 +214,6 @@ export function createGalaxy(container, {onFrame = () => {}, onManualInput = () 
     for (const material of materials) material.uniforms.uCameraDistance.value = camera.position.z;
   }
 
-  function placeApproachCamera() {
-    const end = approachEndDistance(baseCameraDistance);
-    const distance = THREE.MathUtils.lerp(baseCameraDistance, end, cameraProgress);
-    // Translate along the same ray through the core. The view direction stays fixed.
-    camera.position.set(0, pivot.position.y * (1 - distance / baseCameraDistance), distance);
-    updateCameraDistance();
-  }
-
-  function updateApproach(dt) {
-    if (cameraProgress === cameraTarget) return;
-    cameraProgress = easeApproach(cameraProgress, cameraTarget, dt);
-    placeApproachCamera();
-  }
   const resize=()=>{
     const box=container.getBoundingClientRect();width=Math.max(1,box.width);height=Math.max(1,box.height);
     scale=Math.min(window.devicePixelRatio||1,quality,Math.sqrt(2800000/(width*height)));
@@ -241,7 +224,10 @@ export function createGalaxy(container, {onFrame = () => {}, onManualInput = () 
     const horizontalFrustum = halfFrustum * camera.aspect;
     const horizontalFit = Math.hypot(FRAMING_RADIUS, FRAMING_RADIUS / horizontalFrustum);
     baseCameraDistance = Math.max(WIDE_CAMERA_DISTANCE, horizontalFit);
-    if (controlMode === 'interactive') placeApproachCamera();
+    if (controlMode === 'interactive') {
+      camera.position.z = baseCameraDistance;
+      updateCameraDistance();
+    }
     camera.updateProjectionMatrix();
     for (const material of materials) {
       // Match point sprite size to the galaxy's apparent size on narrow screens.
@@ -322,7 +308,6 @@ export function createGalaxy(container, {onFrame = () => {}, onManualInput = () 
     stars.rotation.y = (diskNormal.x - initialDiskNormal.x) * .034;
     stars.rotation.x = (diskNormal.y - initialDiskNormal.y) * -.020;
     for(const m of materials)m.uniforms.uTime.value=elapsed;
-    if (controlMode === 'interactive') updateApproach(dt);
     try {
       onFrame(time);
       if (!disposed) {
@@ -366,22 +351,8 @@ export function createGalaxy(container, {onFrame = () => {}, onManualInput = () 
   }
   return {
     canAcceptGesture,
-    get approachProgress() { return cameraProgress; },
-    get approachCameraDistance() { return camera.position.z; },
-    get approachEndDistance() { return approachEndDistance(baseCameraDistance); },
-    setApproachTarget(progress) {
-      if (Number.isFinite(progress)) cameraTarget = clamp(progress, 0, 1);
-    },
-    lockGestureRotation(locked) {
-      if (locked === gestureRotationLocked) return;
-      gestureRotationLocked = locked;
-      if (locked) {
-        yawVelocity = pitchVelocity = 0;
-        rotation.hold();
-      }
-    },
     rotateFromGesture(yaw, pitch = 0) {
-      if (gestureRotationLocked || !canAcceptGesture()
+      if (!canAcceptGesture()
         || !Number.isFinite(yaw) || !Number.isFinite(pitch) || (!yaw && !pitch)) return;
       if (!gestureHasControl) rotation.hold();
       gestureHasControl = true;

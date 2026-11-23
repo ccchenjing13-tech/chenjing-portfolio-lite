@@ -1,226 +1,117 @@
 export const APPROACH_STATE = Object.freeze({
   EXPLORING: 'EXPLORING',
-  FIST_CONFIRMING: 'FIST_CONFIRMING',
+  FIST_SEEN: 'FIST_SEEN',
   ARMED: 'ARMED',
   PALM_OPEN: 'PALM_OPEN',
-  PUSHING: 'PUSHING',
-  RETURNING: 'RETURNING'
+  COMMITTED: 'COMMITTED'
 });
 
 export const APPROACH_CONFIG = Object.freeze({
-  fistMs: 500, fistFrames: 4,
-  fistDropoutMs: 160,
-  openMs: 250, openFrames: 3,
-  cancelFistMs: 350,
-  frameGapMs: 260,
-  lostMs: 1500,
-  armedMs: 7000,
-  openReacquireMs: 400,
+  softFistMs: 45,
+  openAfterFistMs: 1250,
+  maxSampleGapMs: 400,
+  maxTrackingLossMs: 200,
+  pushWindowMs: 1100,
   minPalmScale: .025,
-  calibrationSpread: .12,
-  deadZone: .035,
-  fullRatio: 1.45,
-  ratioJump: .22,
-  smoothingSeconds: .105,
-  maxProgressPerSecond: 1.65,
-  cameraResponse: 8.5,
-  minCameraDistance: 15.2,
-  cameraEndRatio: .56
+  pushRatio: 1.12,
+  minAxisRatio: 1.04,
+  quickPushRatio: 1.19,
+  quickAxisRatio: 1.11,
+  quickFollowThrough: 1.025,
+  spikeRatio: 1.27
 });
-
-const clamp01 = value => Math.max(0, Math.min(1, value));
-const median = values => {
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-};
-
-export function approachEndDistance(start, config = APPROACH_CONFIG) {
-  return Math.min(start, Math.max(config.minCameraDistance, start * config.cameraEndRatio));
-}
-
-export function easeApproach(progress, target, dt, config = APPROACH_CONFIG) {
-  const delta = target - progress;
-  return Math.abs(delta) < .001 ? target : target - delta * Math.exp(-dt * config.cameraResponse);
-}
 
 export function createGestureApproach(config = APPROACH_CONFIG) {
   const mode = APPROACH_STATE;
   let state = mode.EXPLORING;
-  let target = 0;
-  let lastSeen = -Infinity;
-  let lastSample = -Infinity;
-  let armedAt = 0;
-  let requireOpen = false;
-  let evidence = '';
-  let since = 0;
-  let count = 0;
+  let lastTime = -Infinity;
+  let lastTrackedAt = -Infinity;
+  let trackingInterrupted = false;
+  let firstFistAt = -Infinity;
   let lastFistAt = -Infinity;
-  let fistHeldMs = 0;
-  let fistInterrupted = false;
-  let calibration = [];
-  let referenceScale = 0;
-  let filteredRatio = 1;
-  let previousRatio = 1;
-  let pendingRatio;
-  let rebase = false;
-  let lastOpenAt = -Infinity;
-  const ratioRange = config.fullRatio - 1 - config.deadZone;
+  let openedAt = -Infinity;
+  let fistBase, palmBase, spike;
 
-  function clearEvidence() {
-    evidence = '';
-    count = 0;
-    calibration = [];
+  function reset() {
+    if (state === mode.COMMITTED) return;
+    state = mode.EXPLORING;
+    firstFistAt = lastFistAt = openedAt = -Infinity;
+    trackingInterrupted = false;
+    fistBase = palmBase = spike = undefined;
   }
 
-  function transition(next) {
-    state = next;
-    clearEvidence();
-    lastFistAt = -Infinity;
-    fistHeldMs = 0;
-    fistInterrupted = false;
+  function grew(sample, base, ratio, axisRatio) {
+    return base && sample && sample.scale >= base.scale * ratio
+      && sample.width >= base.width * axisRatio && sample.height >= base.height * axisRatio;
   }
 
-  function observe(type, timestamp, duration, minFrames) {
-    if (evidence !== type) {
-      evidence = type;
-      since = timestamp;
-      count = 0;
-    }
-    count++;
-    return count >= minFrames && timestamp - since >= duration;
-  }
-
-  function confirmFist(type, timestamp) {
-    const sinceLastFist = timestamp - lastFistAt;
-    if (type !== 'FIST') {
-      if (type === 'OPEN_PALM' || sinceLastFist >= config.fistDropoutMs) transition(mode.EXPLORING);
-      else fistInterrupted = true;
-      return;
-    }
-    if (fistInterrupted && sinceLastFist >= config.fistDropoutMs) transition(mode.FIST_CONFIRMING);
-    if (!fistInterrupted && count) fistHeldMs += sinceLastFist;
-    count++;
-    lastFistAt = timestamp;
-    fistInterrupted = false;
-    if (count >= config.fistFrames && fistHeldMs >= config.fistMs) {
-      armedAt = timestamp;
-      transition(mode.ARMED);
-    }
-  }
-
-  function cancel() {
-    if (state === mode.EXPLORING || state === mode.RETURNING) return;
-    target = 0;
-    requireOpen = true;
-    transition(mode.RETURNING);
-  }
-
-  function hold(progress, resetReference = true) {
-    if (state !== mode.PUSHING || rebase) return;
-    target = clamp01(progress);
-    rebase = resetReference;
-    pendingRatio = undefined;
-  }
-
-  function updatePush(scale, seconds, progress) {
-    if (rebase) {
-      target = clamp01(progress);
-      const ratio = target ? 1 + config.deadZone + target * ratioRange : 1;
-      referenceScale = scale / ratio;
-      filteredRatio = previousRatio = ratio;
-      pendingRatio = undefined;
-      rebase = false;
-      return;
-    }
-
-    const ratio = scale / referenceScale;
-    if (Math.abs(ratio - previousRatio) > config.ratioJump
-      && (pendingRatio === undefined || Math.abs(ratio - pendingRatio) > config.deadZone)) {
-      pendingRatio = ratio;
-      return;
-    }
-    pendingRatio = undefined;
-    previousRatio = ratio;
-    filteredRatio += (ratio - filteredRatio) * (1 - Math.exp(-seconds / config.smoothingSeconds));
-    const wanted = ratio >= config.fullRatio && filteredRatio >= config.fullRatio - .006
-      ? 1 : clamp01((filteredRatio - 1 - config.deadZone) / ratioRange);
-    const step = config.maxProgressPerSecond * seconds;
-    target += Math.max(-step, Math.min(step, wanted - target));
+  function size(palm) {
+    const scale = palm?.approachScale;
+    const width = palm?.palmWidth ?? scale;
+    const height = palm?.palmHeight ?? scale;
+    return Number.isFinite(scale) && scale >= config.minPalmScale && width > 0 && height > 0
+      ? {scale, width, height} : undefined;
   }
 
   return {
     get state() { return state; },
-    get target() { return target; },
-    get rotationLocked() {
-      return state !== mode.EXPLORING && state !== mode.FIST_CONFIRMING;
-    },
-    cancel,
-    finishReturn() {
-      if (state === mode.RETURNING) transition(mode.EXPLORING);
-    },
-    sample(palm, timestamp, progress) {
-      const gap = timestamp - lastSample;
-      if (timestamp <= lastSample) return;
-      lastSample = timestamp;
-      if (state === mode.RETURNING) return;
-      if (state !== mode.EXPLORING && timestamp - lastSeen >= config.lostMs) {
-        cancel();
-        return;
-      }
-      if ((state === mode.ARMED || state === mode.PALM_OPEN) && timestamp - armedAt >= config.armedMs) {
-        cancel();
-        return;
-      }
-      if (gap > config.frameGapMs && state === mode.FIST_CONFIRMING) transition(mode.EXPLORING);
-      if (palm) lastSeen = timestamp;
-      const scale = palm?.approachScale;
-      const open = palm?.type === 'OPEN_PALM' && Number.isFinite(scale) && scale >= config.minPalmScale;
-      const fist = palm?.type === 'FIST';
+    reset,
+    sample(palm, timestamp) {
+      if (state === mode.COMMITTED || timestamp <= lastTime) return false;
+      if (timestamp - lastTime > config.maxSampleGapMs) reset();
+      lastTime = timestamp;
 
-      if (state === mode.EXPLORING) {
-        if (open) requireOpen = false;
-        if (!fist || requireOpen) return;
-        transition(mode.FIST_CONFIRMING);
-      }
-      if (state === mode.FIST_CONFIRMING) {
-        confirmFist(palm?.type, timestamp);
-        return;
+      const sample = size(palm);
+      const open = palm?.type === 'OPEN_PALM' && sample;
+      const fist = palm?.type === 'FIST' && sample;
+      if (trackingInterrupted && timestamp - lastTrackedAt >= config.maxTrackingLossMs) reset();
+      trackingInterrupted = !open && !fist;
+      if (!trackingInterrupted) lastTrackedAt = timestamp;
+
+      if (fist) {
+        if (state !== mode.FIST_SEEN && state !== mode.ARMED) {
+          reset();
+          firstFistAt = timestamp;
+        }
+        lastFistAt = timestamp;
+        fistBase = sample;
+        // A clear fist can be brief: opening and the push still have to follow.
+        if (state !== mode.ARMED) state = palm.fistConfidence !== 'soft'
+          || timestamp - firstFistAt >= config.softFistMs ? mode.ARMED : mode.FIST_SEEN;
+        return false;
       }
 
-      if (!palm || gap > config.frameGapMs) {
-        clearEvidence();
-        hold(progress);
-        if (!palm) return;
+      if (state === mode.FIST_SEEN || state === mode.ARMED) {
+        if (timestamp - lastFistAt > config.openAfterFistMs) reset();
+        else if (open && state === mode.ARMED) {
+          state = mode.PALM_OPEN;
+          openedAt = timestamp;
+          palmBase = sample; // Capture the first open frame while the hand is already moving.
+        } else if (open) reset();
+        return false;
       }
-      if (state === mode.ARMED || state === mode.PALM_OPEN) {
-        if (!open) {
-          if (state === mode.PALM_OPEN) transition(mode.ARMED);
-          return;
-        }
-        if (state === mode.ARMED) transition(mode.PALM_OPEN);
-        if (calibration.length && Math.abs(scale / calibration[0] - 1) > config.calibrationSpread) clearEvidence();
-        calibration.push(scale);
-        if (observe('open', timestamp, config.openMs, config.openFrames)) {
-          referenceScale = median(calibration);
-          previousRatio = filteredRatio = 1;
-          pendingRatio = undefined;
-          rebase = false;
-          lastOpenAt = timestamp;
-          transition(mode.PUSHING);
-        }
-      } else if (state === mode.PUSHING) {
-        if (!open) {
-          // Keep the distance reference through a brief pose misclassification.
-          hold(progress, timestamp - lastOpenAt >= config.openReacquireMs);
-          if (fist && observe('cancel', timestamp, config.cancelFistMs, config.fistFrames)) cancel();
-          if (!fist) clearEvidence();
-          return;
-        }
-        clearEvidence();
-        lastOpenAt = timestamp;
-        updatePush(scale, Math.min(gap, config.frameGapMs) / 1000, progress);
+
+      if (state !== mode.PALM_OPEN) return false;
+      if (timestamp - openedAt > config.pushWindowMs) {
+        reset();
+        return false;
       }
+      if (!open) return false;
+
+      const ratio = sample.scale / palmBase.scale;
+      const quickPush = ratio >= config.quickFollowThrough
+        && grew(sample, fistBase, config.quickPushRatio, config.quickAxisRatio);
+      if (!quickPush && !grew(sample, palmBase, config.pushRatio, config.minAxisRatio)) {
+        spike = undefined;
+        return false;
+      }
+      // A big isolated change in hand size can be a tracking error.
+      if (ratio > config.spikeRatio && (!spike || sample.scale < spike.scale * .93)) {
+        spike = sample;
+        return false;
+      }
+      state = mode.COMMITTED;
+      return true;
     }
   };
 }

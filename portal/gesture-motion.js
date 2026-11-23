@@ -5,13 +5,13 @@ export const GESTURE_CONFIG = Object.freeze({
   minPitch: -45 * Math.PI / 180,
   maxPitch: 45 * Math.PI / 180,
   maxAbsolutePitch: 86 * Math.PI / 180,
-  smoothingSeconds: 0.045,
+  smoothingSeconds: 0.035,
   rotationResponse: 28,
   deadZone: 0.005,
   maxRadiansPerSecond: 4.3,
   maxRawJump: 0.23,
   maxFrameGapMs: 300,
-  openStableMs: 60,
+  openStableMs: 45,
   handLostMs: 160,
   framesPerSecond: 30,
   minFramesPerSecond: 8
@@ -51,12 +51,15 @@ export function describePalm(landmarks, aspect = 1) {
   const open = extended.length >= 3 && scale > 0.025;
   const firmPoint = extended.some(([base, joint, tip]) =>
     distance(landmarks[tip], landmarks[base], aspect) > 1.7 * distance(landmarks[joint], landmarks[base], aspect));
-  const fist = scale > .025 && extended.length <= 1 && !firmPoint
-    && FINGERS.filter(finger => fingerCurled(landmarks, finger, aspect)).length >= 3;
+  const curled = FINGERS.filter(finger => fingerCurled(landmarks, finger, aspect)).length;
+  const fist = scale > .025 && !firmPoint && (curled >= 3 && extended.length <= 1
+    || curled >= 2 && extended.length === 0);
+  const fistConfidence = fist ? (curled >= 3 ? 'clear' : 'soft') : undefined;
   const palmDistance = (a, b) => Math.hypot((landmarks[a].x - landmarks[b].x) * aspect, landmarks[a].y - landmarks[b].y);
-  const approachScale = Math.sqrt(palmDistance(5, 17) * palmDistance(0, 9));
+  const palmWidth = palmDistance(5, 17), palmHeight = palmDistance(0, 9);
+  const approachScale = Math.sqrt(palmWidth * palmHeight);
   const type = open ? 'OPEN_PALM' : fist ? 'FIST' : 'OTHER_HAND';
-  return {x, y, scale, approachScale, type};
+  return {x, y, scale, approachScale, palmWidth, palmHeight, type, fistConfidence};
 }
 
 function createAxisFilter(config, sensitivity) {

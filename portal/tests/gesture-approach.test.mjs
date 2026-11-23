@@ -1,159 +1,90 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {APPROACH_CONFIG as config, APPROACH_STATE as state, approachEndDistance,
-  createGestureApproach, easeApproach} from '../gesture-approach.js';
+import {APPROACH_STATE as state, createGestureApproach} from '../gesture-approach.js';
 
-const open = (ratio = 1) => ({type: 'OPEN_PALM', approachScale: .15 * ratio});
+const open = (ratio = 1, x = .5) => ({type: 'OPEN_PALM', x, approachScale: .15 * ratio});
 const fist = {type: 'FIST', approachScale: .15};
+const softFist = {...fist, fistConfidence: 'soft'};
 const other = {type: 'OTHER_HAND', approachScale: .15};
-const feed = (machine, palm, start, end, progress = 0) => {
-  for (let time = start; time <= end; time += 50) {
-    machine.sample(palm, time, progress);
-  }
-};
-function ready() {
-  const machine = createGestureApproach();
-  feed(machine, fist, 0, 500);
-  feed(machine, open(), 550, 800);
-  assert.equal(machine.state, state.PUSHING);
-  return machine;
-}
 
-test('a normal open palm never activates zoom, and a fist needs 500 ms of detected hold time', () => {
+test('a quick clear fist, opening and pushing can commit on the next forward sample', () => {
   const machine = createGestureApproach();
-  feed(machine, open(2), 0, 600);
-  assert.equal(machine.state, state.EXPLORING);
-  assert.equal(machine.target, 0);
-  feed(machine, fist, 650, 1100);
-  assert.equal(machine.state, state.FIST_CONFIRMING);
-  machine.sample(open(), 1110, 0);
-  assert.equal(machine.state, state.EXPLORING);
-  feed(machine, fist, 1150, 1600);
-  assert.equal(machine.state, state.FIST_CONFIRMING);
-  machine.sample(fist, 1650, 0);
+  assert.equal(machine.sample(fist, 0), false);
   assert.equal(machine.state, state.ARMED);
-  assert.ok(machine.rotationLocked);
-});
-
-test('short uncertain frames pause fist confirmation without discarding the measured hold', () => {
-  const machine = createGestureApproach();
-  feed(machine, fist, 0, 400);
-  machine.sample(other, 450, 0);
-  machine.sample(null, 470, 0);
-  machine.sample(fist, 500, 0);
-  machine.sample(fist, 550, 0);
-  assert.equal(machine.state, state.FIST_CONFIRMING);
-  machine.sample(fist, 600, 0);
-  assert.equal(machine.state, state.ARMED);
-});
-
-test('a longer interruption restarts fist confirmation', () => {
-  const machine = createGestureApproach();
-  feed(machine, fist, 0, 450);
-  machine.sample(other, 520, 0);
-  machine.sample(fist, 625, 0);
-  assert.equal(machine.state, state.FIST_CONFIRMING);
-  feed(machine, fist, 675, 1075);
-  assert.equal(machine.state, state.FIST_CONFIRMING);
-  machine.sample(fist, 1125, 0);
-  assert.equal(machine.state, state.ARMED);
-});
-
-test('unstable palm scale delays calibration, then a 250 ms stable window arms pushing', () => {
-  const machine = createGestureApproach();
-  feed(machine, fist, 0, 500);
-  for (let time = 550; time <= 900; time += 50) machine.sample(open(time % 100 ? 1.3 : 1), time, 0);
+  assert.equal(machine.sample(open(), 45), false);
   assert.equal(machine.state, state.PALM_OPEN);
-  feed(machine, open(1.1), 950, 1200);
-  assert.equal(machine.state, state.PUSHING);
-  assert.equal(machine.target, 0);
+  assert.equal(machine.sample(open(1.13), 90), true);
+  assert.equal(machine.state, state.COMMITTED);
+  machine.reset();
+  assert.equal(machine.sample(null, 150), false);
+  assert.equal(machine.sample(open(.94), 200), false);
+  assert.equal(machine.state, state.COMMITTED);
 });
 
-test('zoom has a dead zone, rejects an isolated scale jump, and reverses smoothly from the stop', () => {
-  const machine = ready();
-  feed(machine, open(1.025), 850, 1150);
-  assert.equal(machine.target, 0);
-  machine.sample(open(config.fullRatio), 1200, 0);
-  assert.equal(machine.target, 0);
-  machine.sample(open(), 1250, 0);
-  assert.equal(machine.target, 0);
-  for (let time = 1300; time <= 1450; time += 50) {
-    const previous = machine.target;
-    machine.sample(open(1.2 + (time - 1300) * .0025), time, 0);
-    assert.ok(machine.target - previous <= config.maxProgressPerSecond * .05 + 1e-8);
-  }
-  assert.ok(machine.target > .1);
-  feed(machine, open(config.fullRatio), 1500, 2800);
-  assert.equal(machine.target, 1);
-  assert.equal(machine.state, state.PUSHING);
-  feed(machine, open(), 2850, 4200, 1);
-  assert.equal(machine.target, 0);
-  assert.equal(machine.state, state.PUSHING);
+test('continuous opening and pushing is recognized even if the first open sample is already closer', () => {
+  const machine = createGestureApproach();
+  machine.sample(fist, 0);
+  machine.sample(open(1.17), 70);
+  assert.equal(machine.sample(open(1.24), 105), true);
 });
 
-test('brief pose misclassification preserves the reference so a small forward movement is still counted', () => {
-  const machine = ready();
-  machine.sample(other, 850, 0);
-  assert.equal(machine.target, 0);
-  feed(machine, open(1.05), 900, 1350);
-  assert.ok(machine.target > .03);
-  feed(machine, open(1.15), 1400, 1850);
-  assert.ok(machine.target > .25);
-});
-
-test('a sustained pose change requires a new distance sample without moving the camera', () => {
-  const machine = ready();
-  feed(machine, open(1.15), 850, 1250);
-  const held = machine.target;
-  feed(machine, other, 1300, 1700, held);
-  feed(machine, open(1.4), 1750, 2050, held);
-  assert.ok(Math.abs(machine.target - held) < 1e-10);
-});
-
-test('brief loss freezes rendered progress and reacquisition never jumps to the new hand scale', () => {
-  const machine = ready();
-  feed(machine, open(1.32), 850, 1600);
-  const held = machine.target * .75;
-  machine.sample(null, 1650, held);
-  assert.equal(machine.target, held);
-  machine.sample(open(1.55), 1900, held);
-  assert.equal(machine.target, held);
-  feed(machine, open(1.55), 1950, 2150, held);
-  assert.ok(Math.abs(machine.target - held) < 1e-10);
-  machine.sample(null, 3650, held);
-  assert.equal(machine.state, state.RETURNING);
-  assert.equal(machine.target, 0);
-  machine.finishReturn();
-  assert.equal(machine.state, state.EXPLORING);
-  assert.equal(machine.rotationLocked, false);
-});
-
-test('a held second fist cancels and cannot immediately start another attempt', () => {
-  const machine = ready();
-  feed(machine, fist, 850, 1150, .4);
-  assert.equal(machine.state, state.PUSHING);
-  machine.sample(fist, 1200, .4);
-  assert.equal(machine.state, state.RETURNING);
-  assert.equal(machine.target, 0);
-  machine.finishReturn();
-  feed(machine, fist, 1250, 2000);
-  assert.equal(machine.state, state.EXPLORING);
-  machine.sample(open(), 2050, 0);
-  feed(machine, fist, 2100, 2600);
+test('a soft fist needs another brief sample before it can arm', () => {
+  const machine = createGestureApproach();
+  machine.sample(softFist, 0);
+  machine.sample(softFist, 30);
+  assert.equal(machine.state, state.FIST_SEEN);
+  machine.sample(open(), 60);
+  assert.equal(machine.sample(open(1.2), 85), false);
+  machine.sample(softFist, 100);
+  machine.sample(softFist, 150);
   assert.equal(machine.state, state.ARMED);
+  machine.sample(open(), 180);
+  assert.equal(machine.sample(open(1.16), 215), true);
 });
 
-test('camera progress settles monotonically at an entrance strictly in front of the core', () => {
-  for (const start of [19.8, 22.6, 56]) {
-    const end = approachEndDistance(start);
-    assert.ok(end < start && end >= config.minCameraDistance);
-  }
-  let rendered = easeApproach(0, 1, 1 / 60);
-  assert.ok(rendered > 0 && rendered < 1);
-  for (let frame = 0; frame < 120; frame++) rendered = easeApproach(rendered, 1, 1 / 60);
-  assert.equal(rendered, 1);
-  rendered = easeApproach(rendered, 0, 1 / 60);
-  assert.ok(rendered > 0 && rendered < 1);
-  for (let frame = 0; frame < 120; frame++) rendered = easeApproach(rendered, 0, 1 / 60);
-  assert.equal(rendered, 0);
+test('ordinary rotation, opening a fist in place and a single big landmark spike do not enter', () => {
+  const machine = createGestureApproach();
+  assert.equal(machine.sample(open(1.28, .3), 0), false);
+  assert.equal(machine.sample(open(1.68, .7), 30), false);
+  machine.sample(fist, 60);
+  assert.equal(machine.sample(open(1.30), 100), false);
+  assert.equal(machine.sample(open(1.31), 130), false);
+  assert.equal(machine.sample(open(1.75), 160), false);
+  assert.equal(machine.sample(open(1.3), 190), false);
+  assert.equal(machine.state, state.PALM_OPEN);
+});
+
+test('a sustained fast push passes the check for a single large landmark jump', () => {
+  const machine = createGestureApproach();
+  machine.sample(fist, 0);
+  machine.sample(open(), 40);
+  assert.equal(machine.sample(open(1.34), 80), false);
+  assert.equal(machine.sample(open(1.35), 110), true);
+});
+
+test('a widening palm with no additional height cannot qualify as a forward push', () => {
+  const machine = createGestureApproach();
+  machine.sample(fist, 0);
+  machine.sample(open(), 30);
+  assert.equal(machine.sample({...open(1.17), palmWidth: .20, palmHeight: .15}, 70), false);
+});
+
+test('a short tracking dropout is tolerated, but losing tracking or waiting requires another fist', () => {
+  const quick = createGestureApproach();
+  quick.sample(fist, 0);
+  quick.sample(other, 40);
+  quick.sample(open(), 70);
+  quick.sample(null, 110);
+  assert.equal(quick.sample(open(1.14), 170), true);
+  const canceled = createGestureApproach();
+  canceled.sample(fist, 0);
+  canceled.sample(open(), 50);
+  canceled.sample(null, 160);
+  assert.equal(canceled.sample(open(1.24), 275), false);
+  assert.equal(canceled.state, state.EXPLORING);
+  canceled.sample(fist, 300);
+  canceled.sample(open(), 350);
+  for (let time = 450; time <= 1450; time += 100) canceled.sample(open(), time);
+  assert.equal(canceled.sample(open(1.3), 1480), false);
+  assert.equal(canceled.state, state.EXPLORING);
 });
