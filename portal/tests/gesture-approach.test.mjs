@@ -80,12 +80,12 @@ test('a short tracking dropout is tolerated, but losing tracking or waiting requ
   canceled.sample(fist, 0);
   canceled.sample(open(), 50);
   canceled.sample(null, 160);
-  assert.equal(canceled.sample(open(1.24), 275), false);
+  assert.equal(canceled.sample(open(1.24), 380), false);
   assert.equal(canceled.state, state.EXPLORING);
-  canceled.sample(fist, 300);
-  canceled.sample(open(), 350);
-  for (let time = 450; time <= 1450; time += 100) canceled.sample(open(), time);
-  assert.equal(canceled.sample(open(1.3), 1480), false);
+  canceled.sample(fist, 400);
+  canceled.sample(open(), 450);
+  for (let time = 550; time <= 1950; time += 100) canceled.sample(open(), time);
+  assert.equal(canceled.sample(open(1.3), 1980), false);
   assert.equal(canceled.state, state.EXPLORING);
 });
 
