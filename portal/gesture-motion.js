@@ -1,20 +1,19 @@
 export const GESTURE_CONFIG = Object.freeze({
   mirrored: true, // Selfie coordinates: moving right reduces raw camera X.
-  radiansPerFrameWidth: 7.5,
-  verticalSensitivity: 4.5, // Radians per full camera-frame height, before limits.
+  radiansPerFrameWidth: 8.4,
+  verticalSensitivity: 5.2, // Radians per full camera-frame height, before limits.
   minPitch: -45 * Math.PI / 180,
   maxPitch: 45 * Math.PI / 180,
   maxAbsolutePitch: 86 * Math.PI / 180,
   smoothingSeconds: 0.035,
-  rotationResponse: 28,
+  rotationResponse: 32,
   deadZone: 0.005,
   maxRadiansPerSecond: 4.3,
   maxRawJump: 0.23,
   maxFrameGapMs: 300,
-  openStableMs: 45,
+  poseGraceMs: 140,
   handLostMs: 160,
-  framesPerSecond: 30,
-  minFramesPerSecond: 8
+  framesPerSecond: 30
 });
 
 const PALM_POINTS = [0, 5, 9, 13, 17];
@@ -52,14 +51,27 @@ export function describePalm(landmarks, aspect = 1) {
   const firmPoint = extended.some(([base, joint, tip]) =>
     distance(landmarks[tip], landmarks[base], aspect) > 1.7 * distance(landmarks[joint], landmarks[base], aspect));
   const curled = FINGERS.filter(finger => fingerCurled(landmarks, finger, aspect)).length;
-  const fist = scale > .025 && !firmPoint && (curled >= 3 && extended.length <= 1
-    || curled >= 2 && extended.length === 0);
-  const fistConfidence = fist ? (curled >= 3 ? 'clear' : 'soft') : undefined;
+  const tucked = FINGERS.filter(([base, joint, tip]) => {
+    const knuckle = landmarks[base], hinge = landmarks[joint], end = landmarks[tip];
+    const proximal = distance(knuckle, hinge, aspect);
+    const middle = landmarks[tip - 1];
+    const total = distance(hinge, middle, aspect) + distance(middle, end, aspect);
+    const bent = total > .009 && distance(hinge, end, aspect) < .70 * total
+      && distance(knuckle, end, aspect) < 1.55 * proximal;
+    const closeToPalm = proximal > .003 && distance(knuckle, end, aspect) <= 1.28 * proximal
+      && distance(end, landmarks[0], aspect) <= 1.04 * distance(hinge, landmarks[0], aspect);
+    return bent || closeToPalm;
+  }).length;
+  const clearFist = curled >= 3 && extended.length <= 1 || tucked >= 3 && extended.length === 0;
+  const softFist = extended.length === 0 && (curled >= 2 || tucked >= 2);
+  const fist = scale > .025 && !firmPoint && (clearFist || softFist);
+  const fistConfidence = fist ? (clearFist ? 'clear' : 'soft') : undefined;
+  const loosePalm = !fist && extended.length >= 2 && curled <= 1 && tucked <= 1;
   const palmDistance = (a, b) => Math.hypot((landmarks[a].x - landmarks[b].x) * aspect, landmarks[a].y - landmarks[b].y);
   const palmWidth = palmDistance(5, 17), palmHeight = palmDistance(0, 9);
   const approachScale = Math.sqrt(palmWidth * palmHeight);
   const type = open ? 'OPEN_PALM' : fist ? 'FIST' : 'OTHER_HAND';
-  return {x, y, scale, approachScale, palmWidth, palmHeight, type, fistConfidence};
+  return {x, y, scale, approachScale, palmWidth, palmHeight, type, fistConfidence, loosePalm};
 }
 
 function createAxisFilter(config, sensitivity) {
@@ -72,7 +84,7 @@ function createAxisFilter(config, sensitivity) {
     clear() {
       previous = filtered = anchor = sampledAt = undefined;
     },
-    sample(value, timestamp, stable) {
+    sample(value, timestamp) {
       const dtMs = timestamp - sampledAt;
       if (sampledAt === undefined || dtMs <= 0 || dtMs > config.maxFrameGapMs
         || Math.abs(value - previous) > config.maxRawJump) {
@@ -85,10 +97,6 @@ function createAxisFilter(config, sensitivity) {
       previous = value;
       sampledAt = timestamp;
       filtered += (value - filtered) * (1 - Math.exp(-seconds / config.smoothingSeconds));
-      if (!stable) {
-        anchor = filtered;
-        return 0;
-      }
       const offset = filtered - anchor;
       const movement = Math.sign(offset) * Math.max(0, Math.abs(offset) - config.deadZone);
       const stepLimit = config.maxRadiansPerSecond * seconds;
@@ -102,10 +110,14 @@ function createAxisFilter(config, sensitivity) {
 export function createGestureMotion(config = GESTURE_CONFIG) {
   let type = 'NO_HAND';
   let since = 0;
+  let lastPalm = -Infinity;
+  let uncertain = false;
   const horizontal = createAxisFilter(config, config.radiansPerFrameWidth);
   const vertical = createAxisFilter(config, config.verticalSensitivity);
 
   function clearPosition() {
+    lastPalm = -Infinity;
+    uncertain = false;
     horizontal.clear();
     vertical.clear();
   }
@@ -122,22 +134,31 @@ export function createGestureMotion(config = GESTURE_CONFIG) {
       if (changed) {
         type = nextType;
         since = timestamp;
-        clearPosition();
       }
       const gesture = {type, stableMs: timestamp - since, scale: palm?.scale ?? null};
-      if (!canControl || type !== 'OPEN_PALM') {
-        clearPosition();
-        return {yaw: 0, pitch: 0, gesture, changed};
-      }
+      const isPalm = type === 'OPEN_PALM' || palm?.loosePalm;
+      const trackedPalm = isPalm || timestamp - lastPalm <= config.poseGraceMs;
 
-      const stable = gesture.stableMs >= config.openStableMs;
+      if (!canControl || type === 'FIST' || !trackedPalm) {
+        clearPosition();
+        return {yaw: 0, pitch: 0, gesture, changed, trackedPalm: false};
+      }
+      // One uncertain/missing frame must not erase the position of a moving palm.
+      // Don't rotate on ambiguous poses; the next good sample can pick up where we left off.
+      if (!isPalm) {
+        uncertain = true;
+        return {yaw: 0, pitch: 0, gesture, changed, trackedPalm: true};
+      }
+      if (uncertain && timestamp - lastPalm > config.poseGraceMs) clearPosition();
+      uncertain = false;
+      lastPalm = timestamp;
       const x = config.mirrored ? 1 - palm.x : palm.x;
-      const yaw = horizontal.sample(x, timestamp, stable);
+      const yaw = horizontal.sample(x, timestamp);
       // Camera Y and the existing vertical drag both increase down the screen.
       let pitch = 0;
-      if (Number.isFinite(palm.y)) pitch = vertical.sample(palm.y, timestamp, stable);
+      if (Number.isFinite(palm.y)) pitch = vertical.sample(palm.y, timestamp);
       else vertical.clear();
-      return {yaw, pitch, gesture, changed};
+      return {yaw, pitch, gesture, changed, trackedPalm: true};
     }
   };
 }

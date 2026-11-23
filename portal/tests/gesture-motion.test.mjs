@@ -176,3 +176,31 @@ test('mouse rotation still applies its original screen-space step after a hand t
   settle(rotation);
   samePose(rotation.orientation, new Quaternion());
 });
+
+test('rotation follows the next good frame without restarting when MediaPipe briefly loses the pose', () => {
+  const tracker = createGestureMotion();
+  assert.equal(tracker.sample(palm(.50, .50), 0, true).yaw, 0);
+  const first = tracker.sample(palm(.55, .46), 34, true);
+  assert.ok(first.yaw < 0 && first.pitch < 0);
+  assert.equal(tracker.sample({type: 'OTHER_HAND'}, 68, true).yaw, 0);
+  const recovered = tracker.sample(palm(.62, .41), 102, true);
+  assert.ok(recovered.yaw < 0 && recovered.pitch < 0);
+  assert.equal(tracker.sample(null, 300, true).trackedPalm, false);
+  assert.equal(tracker.sample(palm(.80, .72), 330, true).yaw, 0);
+});
+
+test('relaxed palms can rotate, but rotation stops and rebases on a fist', () => {
+  const tracker = createGestureMotion();
+  const relaxed = (x, y) => ({...palm(x, y), type: 'OTHER_HAND', loosePalm: true});
+  tracker.sample(relaxed(.5, .5), 0, true);
+  assert.ok(tracker.sample(relaxed(.55, .55), 35, true).pitch > 0);
+  assert.equal(tracker.sample({type:'FIST'}, 60, true).trackedPalm, false);
+  assert.equal(tracker.sample(relaxed(.8, .8), 90, true).yaw, 0);
+});
+
+test('a slower tracker still rotates on consecutive valid frames', () => {
+  const tracker = createGestureMotion();
+  tracker.sample(palm(.5, .5), 0, true);
+  const movement = tracker.sample(palm(.55, .55), 180, true);
+  assert.ok(movement.yaw < 0 && movement.pitch > 0);
+});

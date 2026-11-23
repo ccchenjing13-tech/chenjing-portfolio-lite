@@ -18,6 +18,15 @@ export function mountPortal(root, finish) {
   let disposed = false;
   let flightState;
 
+  const debug = new URLSearchParams(location.search).get('gestureDebug') === '1';
+  let debugLabel;
+  if (debug) {
+    debugLabel = document.createElement('div');
+    debugLabel.className = 'portal__gesture-debug';
+    debugLabel.textContent = '等待摄像头';
+    root.append(debugLabel);
+  }
+
   function renderInstructions() {
     if (!cameraStatus || flightState) return;
     const {state, hasTracked, canRetry, awaitingActivation} = cameraStatus;
@@ -88,6 +97,7 @@ export function mountPortal(root, finish) {
     retry.hidden = true;
     if (document.activeElement === enter || document.activeElement === container) skip.focus({preventScroll: true});
     instructions.textContent = '正在穿越银河…';
+    debugLabel?.remove();
     stopHandInput();
 
     try {
@@ -182,6 +192,10 @@ export function mountPortal(root, finish) {
         canControl: () => approach.state !== APPROACH_STATE.COMMITTED && galaxy?.canAcceptGesture(),
         onRotate: (yaw, pitch) => galaxy?.rotateFromGesture(yaw, pitch),
         onState: showCameraStatus,
+        onDiagnostics: debugLabel && (({mode, fps, latency, pose}) => {
+          const next = `${mode} · ${fps} FPS · ${latency} ms · ${pose} · ${approach.state}`;
+          if (debugLabel.textContent !== next) debugLabel.textContent = next;
+        }),
         onGesture: detail => root.dispatchEvent(new CustomEvent('portal-gesturechange', {detail, bubbles: true})),
         onHandSample: (palm, time) => {
           if (!galaxy || flightState) return;

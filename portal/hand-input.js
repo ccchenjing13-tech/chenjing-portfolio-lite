@@ -15,6 +15,7 @@ const emptyGesture = () => ({type: 'NO_HAND', stableMs: 0, scale: null});
 
 export function createHandInput({
   canControl, onRotate, onState, onGesture, onHandSample = () => {},
+  onDiagnostics,
   loadTracker = openHandTracker,
   config = GESTURE_CONFIG
 }) {
@@ -28,14 +29,14 @@ export function createHandInput({
   let hasTracked = false;
   let currentGesture = emptyGesture();
   let currentState;
-  let timeout;
+  let timeout, frameCallback;
   let playback = 0;
   let inferencePending = false;
   let minimumInterval = 1000 / config.framesPerSecond;
   let lastVideoTime = -1;
   let lastOpen = -Infinity;
   let lastHandSample = -Infinity;
-  let averageInferenceMs = 0;
+  let debugAt = 0, debugFrames = 0;
 
   function status(state, detail = {}) {
     const next = {state, hasTracked, canRetry: retryAllowed, awaitingActivation: false, ...detail};
@@ -54,7 +55,7 @@ export function createHandInput({
 
   function pause() {
     playback++;
-    clearTimeout(timeout);
+    clearSchedule();
     resetGesture();
     video?.pause();
     stream?.getTracks().forEach(track => { track.enabled = false; });
@@ -81,8 +82,26 @@ export function createHandInput({
     status(state);
   }
 
+  function clearSchedule() {
+    clearTimeout(timeout);
+    if (frameCallback !== undefined) video?.cancelVideoFrameCallback?.(frameCallback);
+    frameCallback = undefined;
+  }
+
   function schedule(delay = 0) {
-    timeout = setTimeout(readFrame, delay);
+    timeout = setTimeout(() => {
+      if (!video?.requestVideoFrameCallback || video.currentTime !== lastVideoTime) {
+        void readFrame();
+        return;
+      }
+      const next = () => {
+        clearSchedule();
+        void readFrame();
+      };
+      frameCallback = video.requestVideoFrameCallback(next);
+      // Hidden video elements in some browsers don't always deliver frame callbacks.
+      timeout = setTimeout(next, 40);
+    }, delay);
   }
 
   async function readFrame() {
@@ -101,22 +120,30 @@ export function createHandInput({
         if (attempt !== playback || stopped || document.hidden) return;
         lastHandSample = now;
         onHandSample(palm, now);
-        const {yaw, pitch, gesture, changed} = motion.sample(palm, now, canControl());
+        const {yaw, pitch, gesture, changed, trackedPalm} = motion.sample(palm, now, canControl());
         currentGesture = gesture;
         if (changed) onGesture({...gesture});
 
-        if (gesture.type === 'OPEN_PALM') {
+        if (trackedPalm) {
           lastOpen = now;
-          if (gesture.stableMs >= config.openStableMs) {
-            hasTracked = true;
-            status(CAMERA_STATE.TRACKING);
-            if (yaw || pitch) onRotate(yaw, pitch);
-          }
+          hasTracked = true;
+          status(CAMERA_STATE.TRACKING);
+          if (yaw || pitch) onRotate(yaw, pitch);
         }
         const cost = performance.now() - now;
-        averageInferenceMs += (cost - averageInferenceMs) * 0.2;
-        const targetInterval = Math.min(1000 / config.minFramesPerSecond,
-          Math.max(minimumInterval, averageInferenceMs * 1.15));
+        const targetInterval = tracker.mode === 'main'
+          ? Math.max(minimumInterval, cost * 1.3)
+          : minimumInterval;
+        if (onDiagnostics) {
+          debugFrames++;
+          const elapsed = now - debugAt;
+          if (elapsed >= 250) {
+            onDiagnostics({mode: tracker.mode, fps: Math.round(1000 * debugFrames / elapsed),
+              latency: Math.round(cost), pose: palm?.loosePalm && gesture.type !== 'OPEN_PALM' ? 'LOOSE_PALM' : gesture.type});
+            debugAt = now;
+            debugFrames = 0;
+          }
+        }
         if (now - lastOpen >= config.handLostMs) status(CAMERA_STATE.HAND_LOST);
         // The cadence is measured between starts; inference is already part of that time.
         schedule(Math.max(0, targetInterval - cost));
@@ -146,6 +173,8 @@ export function createHandInput({
       await video.play();
       if (attempt !== playback || stopped || document.hidden) return;
       lastVideoTime = -1;
+      debugAt = performance.now();
+      debugFrames = 0;
       status(CAMERA_STATE.HAND_LOST);
       schedule();
     } catch (error) {
@@ -221,7 +250,6 @@ export function createHandInput({
       }
       tracker = loaded;
       minimumInterval = 1000 / (tracker.mode === 'main' ? Math.min(12, config.framesPerSecond) : config.framesPerSecond);
-      averageInferenceMs = 0;
       void resume();
     } catch {
       if (!stopped && stream === acquired) fail(CAMERA_STATE.ERROR);

@@ -88,3 +88,19 @@ test('a short tracking dropout is tolerated, but losing tracking or waiting requ
   assert.equal(canceled.sample(open(1.3), 1480), false);
   assert.equal(canceled.state, state.EXPLORING);
 });
+
+test('a relaxed palm with a small forward movement still enters after a fist', () => {
+  const machine = createGestureApproach();
+  machine.sample(fist, 0);
+  machine.sample(open(), 42);
+  assert.equal(machine.sample({...open(1.09), type: 'OTHER_HAND', loosePalm: true}, 85), true);
+});
+
+test('occlusion while opening does not discard a confirmed fist', () => {
+  const machine = createGestureApproach();
+  machine.sample(fist, 0);
+  machine.sample(null, 80);
+  machine.sample(other, 200);
+  machine.sample(open(), 320);
+  assert.equal(machine.sample(open(1.09), 365), true);
+});

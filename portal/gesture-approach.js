@@ -11,12 +11,13 @@ export const APPROACH_CONFIG = Object.freeze({
   openAfterFistMs: 1250,
   maxSampleGapMs: 400,
   maxTrackingLossMs: 200,
+  maxOpeningLossMs: 500,
   pushWindowMs: 1100,
   minPalmScale: .025,
-  pushRatio: 1.12,
-  minAxisRatio: 1.04,
-  quickPushRatio: 1.19,
-  quickAxisRatio: 1.11,
+  pushRatio: 1.08,
+  minAxisRatio: 1.012,
+  quickPushRatio: 1.16,
+  quickAxisRatio: 1.05,
   quickFollowThrough: 1.025,
   spikeRatio: 1.27
 });
@@ -42,7 +43,8 @@ export function createGestureApproach(config = APPROACH_CONFIG) {
 
   function grew(sample, base, ratio, axisRatio) {
     return base && sample && sample.scale >= base.scale * ratio
-      && sample.width >= base.width * axisRatio && sample.height >= base.height * axisRatio;
+      && sample.width >= base.width * axisRatio && sample.height >= base.height * axisRatio
+      && (sample.width >= base.width * 1.045 || sample.height >= base.height * 1.045);
   }
 
   function size(palm) {
@@ -58,13 +60,18 @@ export function createGestureApproach(config = APPROACH_CONFIG) {
     reset,
     sample(palm, timestamp) {
       if (state === mode.COMMITTED || timestamp <= lastTime) return false;
-      if (timestamp - lastTime > config.maxSampleGapMs) reset();
+      // Curling/opening can briefly hide the fingers. Keep the confirmed fist across
+      // that transition; once open, use a shorter gap so a different hand can't push.
+      const opening = state === mode.ARMED;
+      const maxGap = opening ? config.maxOpeningLossMs : config.maxSampleGapMs;
+      const maxLoss = opening ? config.maxOpeningLossMs : config.maxTrackingLossMs;
+      if (timestamp - lastTime > maxGap) reset();
       lastTime = timestamp;
 
       const sample = size(palm);
-      const open = palm?.type === 'OPEN_PALM' && sample;
+      const open = (palm?.type === 'OPEN_PALM' || palm?.loosePalm) && sample;
       const fist = palm?.type === 'FIST' && sample;
-      if (trackingInterrupted && timestamp - lastTrackedAt >= config.maxTrackingLossMs) reset();
+      if (trackingInterrupted && timestamp - lastTrackedAt >= maxLoss) reset();
       trackingInterrupted = !open && !fist;
       if (!trackingInterrupted) lastTrackedAt = timestamp;
 
