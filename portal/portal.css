@@ -70,6 +70,7 @@ html.portal-pending::after{content:"";position:fixed;inset:0;z-index:1000;backgr
 .portal-replay:not([hidden]){display:inline-block;margin:16px 0 0;padding:3px 0;border:0;background:none;color:var(--muted);font-family:inherit;cursor:pointer}
 .portal-replay:hover,.portal-replay:focus-visible{color:var(--fg)}
 
-.portal__gesture-debug{position:absolute;z-index:6;left:24px;top:20px;padding:7px 10px;background:#050817d9;color:var(--muted);font:12px/1.4 monospace;max-width:66%;pointer-events:none}
 
 .portal-camera-source{position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none}
+
+#top h1.portal-focus-target:focus{outline:none}

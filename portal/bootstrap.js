@@ -33,6 +33,7 @@
       if (focus) {
         const heading = home?.querySelector('#top h1');
         if (heading) {
+          heading.classList.add('portal-focus-target');
           heading.tabIndex = -1;
           heading.focus({preventScroll: true});
         }

@@ -19,15 +19,6 @@ export function mountPortal(root, finish) {
   let flightState;
   let slowReads = 0, fastReads = 0;
 
-  const debug = new URLSearchParams(location.search).get('gestureDebug') === '1';
-  let debugLabel;
-  if (debug) {
-    debugLabel = document.createElement('div');
-    debugLabel.className = 'portal__gesture-debug';
-    debugLabel.textContent = '正在启动开屏';
-    root.append(debugLabel);
-  }
-
   function renderInstructions() {
     if (!cameraStatus || flightState) return;
     const {state, hasTracked, canRetry, awaitingActivation} = cameraStatus;
@@ -84,21 +75,6 @@ export function mountPortal(root, finish) {
 
   function showCameraStatus(status) {
     cameraStatus = status;
-    if (debugLabel) {
-      const labels = {
-        [CAMERA_STATE.PERMISSION_REQUIRED]: status.awaitingActivation ? '已授权，浏览器要求点按启用' : '等待浏览器授权',
-        [CAMERA_STATE.INITIALIZING]: '已授权，正在加载识别器',
-        [CAMERA_STATE.WAITING_FOR_FRAMES]: '正在等待摄像头送来第一帧',
-        [CAMERA_STATE.TRACKING]: '摄像头正在识别手掌',
-        [CAMERA_STATE.HAND_LOST]: '摄像头已接通，暂未检测到手掌',
-        [CAMERA_STATE.PERMISSION_DENIED]: '摄像头授权被拒绝或受限',
-        [CAMERA_STATE.CAMERA_UNAVAILABLE]: '摄像头不可用',
-        [CAMERA_STATE.PAUSED]: '预览在后台，摄像头已暂停',
-        [CAMERA_STATE.ERROR]: '手势识别启动失败'
-      };
-      const detail = status.errorName ? ` · ${status.errorName}` : '';
-      debugLabel.textContent = (cameraHelp(status) || labels[status.state]) + detail;
-    }
     if (status.state === CAMERA_STATE.ERROR || status.state === CAMERA_STATE.CAMERA_UNAVAILABLE) cancelApproach();
     renderInstructions();
   }
@@ -126,7 +102,6 @@ export function mountPortal(root, finish) {
     retry.hidden = true;
     if (document.activeElement === enter || document.activeElement === container) skip.focus({preventScroll: true});
     instructions.textContent = '正在穿越银河…';
-    debugLabel?.remove();
     stopHandInput();
 
     try {
@@ -179,7 +154,6 @@ export function mountPortal(root, finish) {
     enter.disabled = false;
     root.classList.remove('is-ready');
     message.textContent = text;
-    if (debugLabel) debugLabel.textContent = '三维场景未启动；摄像头未请求';
     message.hidden = false;
     instructions.hidden = retry.hidden = true;
     container.removeAttribute('tabindex');
@@ -222,7 +196,7 @@ export function mountPortal(root, finish) {
         canControl: () => approach.state !== APPROACH_STATE.COMMITTED && galaxy?.canAcceptGesture(),
         onRotate: (yaw, pitch) => galaxy?.rotateFromGesture(yaw, pitch),
         onState: showCameraStatus,
-        onDiagnostics: ({mode, fps, latency, timing, pose}) => {
+        onDiagnostics: ({latency}) => {
           if (latency >= 180) {
             fastReads = 0;
             if (++slowReads === 2) galaxy?.setEconomicalRendering(true);
@@ -230,13 +204,7 @@ export function mountPortal(root, finish) {
             slowReads = 0;
             if (++fastReads === 12) galaxy?.setEconomicalRendering(false);
           }
-          if (debugLabel) {
-            const split = timing
-              ? ` · 取图 ${Math.round(timing.capture)} ms / 推理 ${Math.round(timing.inference)} ms`
-              : '';
-            const next = `${mode}/${timing?.delegate ?? '—'} · ${fps} FPS · 总计 ${latency} ms${split} · ${pose} · ${approach.state}`;
-            if (debugLabel.textContent !== next) debugLabel.textContent = next;
-          }
+
         },
         onGesture: detail => root.dispatchEvent(new CustomEvent('portal-gesturechange', {detail, bubbles: true})),
         onHandSample: (palm, time) => {
