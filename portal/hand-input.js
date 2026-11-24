@@ -42,6 +42,7 @@ export function createHandInput({
   let lastOpen = -Infinity;
   let lastHandSample = -Infinity;
   let debugAt = 0, debugFrames = 0;
+  let slowFrames = 0, fastFrames = 0;
 
   function status(state, detail = {}) {
     const next = {state, hasTracked, canRetry: retryAllowed, awaitingActivation: false, ...detail};
@@ -141,6 +142,15 @@ export function createHandInput({
           if (yaw || pitch) onRotate(yaw, pitch);
         }
         const cost = performance.now() - now;
+        if (cost >= 180) {
+          fastFrames = 0;
+          if (++slowFrames === 3) tracker.setEconomical?.(true);
+        } else if (cost <= 95) {
+          slowFrames = 0;
+          if (++fastFrames === 45) tracker.setEconomical?.(false);
+        } else {
+          slowFrames = fastFrames = 0;
+        }
         const targetInterval = tracker.mode === 'main'
           ? Math.max(minimumInterval, cost * 1.3)
           : minimumInterval;
@@ -149,7 +159,7 @@ export function createHandInput({
           const elapsed = now - debugAt;
           if (elapsed >= 250) {
             onDiagnostics({mode: tracker.mode, fps: Math.round(1000 * debugFrames / elapsed),
-              latency: Math.round(cost), pose: palm?.loosePalm && gesture.type !== 'OPEN_PALM' ? 'LOOSE_PALM' : gesture.type});
+              latency: Math.round(cost), timing: tracker.timing, pose: palm?.loosePalm && gesture.type !== 'OPEN_PALM' ? 'LOOSE_PALM' : gesture.type});
             debugAt = now;
             debugFrames = 0;
           }
@@ -168,8 +178,11 @@ export function createHandInput({
         }
         schedule(8);
       }
-    } catch {
-      if (attempt === playback && !stopped) fail(CAMERA_STATE.ERROR, {reason: 'inference'});
+    } catch (error) {
+      if (attempt === playback && !stopped) {
+        console.warn('Planet Portal hand inference interrupted:', error);
+        fail(CAMERA_STATE.ERROR, {reason: 'inference'});
+      }
     } finally {
       inferencePending = false;
     }
@@ -223,7 +236,7 @@ export function createHandInput({
     try {
       acquired = await navigator.mediaDevices.getUserMedia({
         audio: false,
-        video: {facingMode: {ideal: 'user'}, width: {ideal: 640}, height: {ideal: 480}, frameRate: {ideal: 30, max: 30}}
+        video: {facingMode: {ideal: 'user'}, width: {ideal: 480}, height: {ideal: 360}, frameRate: {ideal: 30, max: 30}}
       });
     } catch (error) {
       clearStageTimeout();

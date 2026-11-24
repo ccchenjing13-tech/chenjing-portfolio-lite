@@ -1,5 +1,13 @@
 import {describePalm} from './gesture-motion.js';
 
+const NORMAL_FRAME_EDGE = 640;
+const ECONOMICAL_FRAME_EDGE = 384;
+
+function frameSize(width, height, edge) {
+  const scale = Math.min(1, edge / Math.max(width, height));
+  return {resizeWidth: Math.round(width * scale), resizeHeight: Math.round(height * scale)};
+}
+
 export async function loadHandLandmarker() {
   const path = new URL('./vendor/mediapipe-0.10.21/', import.meta.url);
   const {FilesetResolver, HandLandmarker} = await import(new URL('vision_bundle.mjs', path).href);
@@ -16,7 +24,8 @@ export async function loadHandLandmarker() {
 
 function openWorker(signal) {
   const worker = new Worker(new URL('./hand-worker.js', import.meta.url));
-  let pending, watchdog, closed = false;
+  let pending, watchdog, timing, closed = false;
+  let edge = NORMAL_FRAME_EDGE;
   const close = () => {
     if (closed) return;
     closed = true;
@@ -33,21 +42,32 @@ function openWorker(signal) {
     clearTimeout(watchdog);
     const request = pending;
     pending = undefined;
-    if (data.ok) request?.resolve(data.palm);
-    else request?.reject(new Error('Hand tracker worker failed'));
+    if (data.ok) request?.resolve(data);
+    else request?.reject(new Error(data.error || 'Hand tracker worker failed'));
   };
   worker.onerror = close;
   signal.addEventListener('abort', close, {once: true});
 
   return ready.then(() => ({
     mode: 'worker',
+    setEconomical(enabled) { edge = enabled ? ECONOMICAL_FRAME_EDGE : NORMAL_FRAME_EDGE; },
+    get timing() { return timing; },
     async sample(video, timestamp) {
-      const bitmap = await createImageBitmap(video);
+      const captureAt = performance.now();
+      let bitmap;
+      try {
+        bitmap = Math.max(video.videoWidth, video.videoHeight) > edge
+          ? await createImageBitmap(video, frameSize(video.videoWidth, video.videoHeight, edge))
+          : await createImageBitmap(video);
+      } catch {
+        bitmap = await createImageBitmap(video);
+      }
+      const capture = performance.now() - captureAt;
       if (closed) {
         bitmap.close();
         return null;
       }
-      return new Promise((resolve, reject) => {
+      const result = await new Promise((resolve, reject) => {
         pending = {resolve, reject};
         try {
           worker.postMessage({bitmap, timestamp}, [bitmap]);
@@ -58,6 +78,8 @@ function openWorker(signal) {
           reject(error);
         }
       });
+      timing = {capture, inference: result.inference, delegate: result.delegate};
+      return result.palm;
     },
     close
   }), error => {
@@ -78,11 +100,25 @@ export async function openHandTracker(signal) {
     detector.close();
     signal.throwIfAborted();
   }
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+  let timing, edge = NORMAL_FRAME_EDGE;
   return {
     mode: 'main',
+    setEconomical(enabled) { edge = enabled ? ECONOMICAL_FRAME_EDGE : NORMAL_FRAME_EDGE; },
+    get timing() { return timing; },
     sample(video, timestamp) {
-      const result = detector.detectForVideo(video, timestamp);
-      return describePalm(result.landmarks[0], video.videoWidth / video.videoHeight);
+      const {resizeWidth, resizeHeight} = frameSize(video.videoWidth, video.videoHeight, edge);
+      if (canvas.width !== resizeWidth || canvas.height !== resizeHeight) {
+        canvas.width = resizeWidth;
+        canvas.height = resizeHeight;
+      }
+      const start = performance.now();
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const inferenceAt = performance.now();
+      const result = detector.detectForVideo(canvas, timestamp);
+      timing = {capture: inferenceAt - start, inference: performance.now() - inferenceAt, delegate: 'CPU'};
+      return describePalm(result.landmarks[0], canvas.width / canvas.height);
     },
     close() { detector.close(); }
   };

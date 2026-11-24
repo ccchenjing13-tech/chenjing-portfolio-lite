@@ -17,6 +17,7 @@ export function mountPortal(root, finish) {
   let galaxy, handInput, cameraStatus, flightStart, fade, fadeTimer;
   let disposed = false;
   let flightState;
+  let slowReads = 0, fastReads = 0;
 
   const debug = new URLSearchParams(location.search).get('gestureDebug') === '1';
   let debugLabel;
@@ -221,10 +222,22 @@ export function mountPortal(root, finish) {
         canControl: () => approach.state !== APPROACH_STATE.COMMITTED && galaxy?.canAcceptGesture(),
         onRotate: (yaw, pitch) => galaxy?.rotateFromGesture(yaw, pitch),
         onState: showCameraStatus,
-        onDiagnostics: debugLabel && (({mode, fps, latency, pose}) => {
-          const next = `${mode} · ${fps} FPS · ${latency} ms · ${pose} · ${approach.state}`;
-          if (debugLabel.textContent !== next) debugLabel.textContent = next;
-        }),
+        onDiagnostics: ({mode, fps, latency, timing, pose}) => {
+          if (latency >= 180) {
+            fastReads = 0;
+            if (++slowReads === 2) galaxy?.setEconomicalRendering(true);
+          } else {
+            slowReads = 0;
+            if (++fastReads === 12) galaxy?.setEconomicalRendering(false);
+          }
+          if (debugLabel) {
+            const split = timing
+              ? ` · 取图 ${Math.round(timing.capture)} ms / 推理 ${Math.round(timing.inference)} ms`
+              : '';
+            const next = `${mode}/${timing?.delegate ?? '—'} · ${fps} FPS · 总计 ${latency} ms${split} · ${pose} · ${approach.state}`;
+            if (debugLabel.textContent !== next) debugLabel.textContent = next;
+          }
+        },
         onGesture: detail => root.dispatchEvent(new CustomEvent('portal-gesturechange', {detail, bubbles: true})),
         onHandSample: (palm, time) => {
           if (!galaxy || flightState) return;

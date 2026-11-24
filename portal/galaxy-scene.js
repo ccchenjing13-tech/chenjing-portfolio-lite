@@ -197,6 +197,7 @@ export function createGalaxy(container, {onFrame = () => {}, onManualInput = () 
   let controlMode = 'interactive';
   let baseCameraDistance = camera.position.z;
   let flightOrigin, flightEnd;
+  let economical = false, lastDraw = -Infinity;
   let gestureHasControl = false;
   let manualUntil = 0;
   let pointer=null,lastX=0,lastY=0,lastT=0,previousTime=0,elapsed=0,frame=0,disposed=false,active=true;
@@ -216,7 +217,7 @@ export function createGalaxy(container, {onFrame = () => {}, onManualInput = () 
 
   const resize=()=>{
     const box=container.getBoundingClientRect();width=Math.max(1,box.width);height=Math.max(1,box.height);
-    scale=Math.min(window.devicePixelRatio||1,quality,Math.sqrt(2800000/(width*height)));
+    scale=Math.min(window.devicePixelRatio||1,quality,Math.sqrt((economical ? 800000 : 2800000)/(width*height)));
     renderer.setPixelRatio(scale);renderer.setSize(width,height,false);
     camera.aspect=width/height;
     // Fit the widest orientation on mobile and keep a closer view in landscape.
@@ -311,7 +312,10 @@ export function createGalaxy(container, {onFrame = () => {}, onManualInput = () 
     try {
       onFrame(time);
       if (!disposed) {
-        renderer.render(scene,camera);
+        if (!economical || controlMode !== 'interactive' || time - lastDraw >= 32) {
+          renderer.render(scene,camera);
+          lastDraw = time;
+        }
         frame=requestAnimationFrame(tick);
       }
     } catch (cause) {
@@ -351,6 +355,11 @@ export function createGalaxy(container, {onFrame = () => {}, onManualInput = () 
   }
   return {
     canAcceptGesture,
+    setEconomicalRendering(enabled) {
+      if (economical === enabled || controlMode !== 'interactive') return;
+      economical = enabled;
+      resize();
+    },
     rotateFromGesture(yaw, pitch = 0) {
       if (!canAcceptGesture()
         || !Number.isFinite(yaw) || !Number.isFinite(pitch) || (!yaw && !pitch)) return;
@@ -362,6 +371,10 @@ export function createGalaxy(container, {onFrame = () => {}, onManualInput = () 
     beginFlythrough(pastCoreDistance) {
       if (disposed || controlMode === 'traverse') return null;
       controlMode = 'traverse';
+      if (economical) {
+        economical = false;
+        resize();
+      }
       if (pointer !== null) {
         const id = pointer;
         pointer = null;
