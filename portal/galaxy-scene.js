@@ -132,7 +132,7 @@ export function createGalaxy(container, {onFrame = () => {}, onManualInput = () 
   const motion = window.matchMedia('(prefers-reduced-motion:reduce)');
   const controller = new AbortController();
   const signal = controller.signal;
-  const renderer = new THREE.WebGLRenderer({alpha:true,antialias:false,powerPreference:'default'});
+  const renderer = new THREE.WebGLRenderer({alpha:true,antialias:false,powerPreference:'high-performance'});
   renderer.setClearColor(0x050817,0);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.domElement.setAttribute('aria-hidden','true');
@@ -198,6 +198,7 @@ export function createGalaxy(container, {onFrame = () => {}, onManualInput = () 
   let baseCameraDistance = camera.position.z;
   let flightOrigin, flightEnd;
   let economical = false, lastDraw = -Infinity;
+  let timingSince = 0, timingFrames = 0, timingTotal = 0, timingPrevious = 0;
   let gestureHasControl = false;
   let manualUntil = 0;
   let pointer=null,lastX=0,lastY=0,lastT=0,previousTime=0,elapsed=0,frame=0,disposed=false,active=true;
@@ -291,6 +292,20 @@ export function createGalaxy(container, {onFrame = () => {}, onManualInput = () 
   }, {signal});
   function tick(time){
     if(disposed||!active)return;
+    if (timingPrevious && controlMode === 'interactive') {
+      const interval = time - timingPrevious;
+      timingTotal += Math.min(interval, 1000);
+      timingFrames++;
+      if (time - timingSince >= 1200) {
+        if (!economical && timingFrames >= 2 && timingTotal / timingFrames > 27) {
+          economical = true;
+          resize();
+        }
+        timingSince = time;
+        timingFrames = timingTotal = 0;
+      }
+    }
+    timingPrevious = time;
     const dt=Math.min(.05,previousTime?(time-previousTime)/1000:1/60);previousTime=time;
     if(!motion.matches && controlMode === 'interactive')elapsed+=dt;
     if (motion.matches) {
@@ -331,7 +346,7 @@ export function createGalaxy(container, {onFrame = () => {}, onManualInput = () 
   document.addEventListener('visibilitychange',()=>{
     active=!document.hidden;
     if(!active)cancelAnimationFrame(frame);
-    else{previousTime=0;frame=requestAnimationFrame(tick);}
+    else{previousTime=0;timingPrevious=0;timingSince=performance.now();frame=requestAnimationFrame(tick);}
   },{signal});
   function dispose() {
     if (disposed) return;
@@ -371,10 +386,6 @@ export function createGalaxy(container, {onFrame = () => {}, onManualInput = () 
     beginFlythrough(pastCoreDistance) {
       if (disposed || controlMode === 'traverse') return null;
       controlMode = 'traverse';
-      if (economical) {
-        economical = false;
-        resize();
-      }
       if (pointer !== null) {
         const id = pointer;
         pointer = null;

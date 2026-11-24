@@ -25,7 +25,7 @@
       lifetime.abort();
       session.dispose?.();
       root.remove();
-      html.classList.remove('portal-open', 'portal-pending');
+      html.classList.remove('portal-open', 'portal-pending', 'portal-revealing');
       for (const element of background) element.inert = false;
       if (record && !preview) {
         try { localStorage.setItem(completedKey, '1'); } catch { /* Storage is optional. */ }
@@ -43,6 +43,12 @@
     for (const element of background) element.inert = true;
     html.classList.add('portal-open');
     document.body.append(root);
+    root.addEventListener('portal-flightchange', event => {
+      if (event.detail.state === 'TRANSITIONING') html.classList.add('portal-revealing');
+    }, {signal: lifetime.signal});
+    const playing = [...document.querySelectorAll('.page video')].filter(video => !video.paused);
+    playing.forEach(video => video.pause());
+
     html.classList.remove('portal-pending');
     window.scrollTo({top: 0, behavior: 'instant'});
     root.tabIndex = -1;

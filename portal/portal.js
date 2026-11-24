@@ -17,7 +17,7 @@ export function mountPortal(root, finish) {
   let galaxy, handInput, cameraStatus, flightStart, fade, fadeTimer;
   let disposed = false;
   let flightState;
-  let slowReads = 0, fastReads = 0;
+  let slowReads = 0;
 
   function renderInstructions() {
     if (!cameraStatus || flightState) return;
@@ -88,6 +88,7 @@ export function mountPortal(root, finish) {
     if (flightState === state) return;
     flightState = state;
     root.dataset.flightState = state;
+    root.dispatchEvent(new CustomEvent('portal-flightchange', {detail: {state}, bubbles: true}));
   }
 
   function complete(options) {
@@ -198,13 +199,10 @@ export function mountPortal(root, finish) {
         onState: showCameraStatus,
         onDiagnostics: ({latency}) => {
           if (latency >= 180) {
-            fastReads = 0;
             if (++slowReads === 2) galaxy?.setEconomicalRendering(true);
           } else {
             slowReads = 0;
-            if (++fastReads === 12) galaxy?.setEconomicalRendering(false);
           }
-
         },
         onGesture: detail => root.dispatchEvent(new CustomEvent('portal-gesturechange', {detail, bubbles: true})),
         onHandSample: (palm, time) => {
