@@ -85,3 +85,10 @@ html.portal-pending .starfield{animation-play-state:paused}
 html.portal-open:not(.portal-revealing) body::before{visibility:hidden}
 html.portal-open:not(.portal-revealing) .grid-bg,
 html.portal-open:not(.portal-revealing) .starfield{visibility:hidden}
+
+.nav-start{display:flex;align-items:center;gap:20px;min-width:0}
+.portal-back:not([hidden]){display:inline-flex;align-items:center;gap:7px;flex-shrink:0;background:transparent;line-height:1.4;font-family:inherit;font-size:11px;font-weight:700;letter-spacing:.06em;white-space:nowrap;cursor:pointer}
+.portal-back:focus-visible{outline:1px solid var(--gold);outline-offset:3px}
+@media(max-width:1150px){.nav-start .nav-links{display:none}}
+@media(max-width:900px){.nav:has(.nav-start){grid-template-columns:auto minmax(0,1fr) auto;gap:12px}.nav:has(.nav-start) .logo{justify-self:center}.portal-back:not([hidden]){padding:10px 12px}}
+@media(max-width:400px){.nav:has(.nav-start){column-gap:8px;padding-inline:12px}.nav:has(.nav-start) .logo{font-size:14px;letter-spacing:.03em}.nav:has(.nav-start) .nav-cta{padding:10px;font-size:9px;letter-spacing:.08em}}

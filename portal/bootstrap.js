@@ -81,11 +81,10 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     clearTimeout(pendingTimeout);
-    const replay = document.getElementById('portal-replay');
-    if (replay) {
+    document.querySelectorAll('[data-portal-replay], #portal-replay').forEach(replay => {
       replay.hidden = false;
       replay.addEventListener('click', explore);
-    }
+    });
     if (showOnLoad) void explore();
     html.classList.remove('portal-pending');
   }, {once: true});
