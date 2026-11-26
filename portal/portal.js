@@ -24,8 +24,9 @@ export function mountPortal(root, finish) {
     const {state, hasTracked, canRetry, awaitingActivation} = cameraStatus;
     root.dataset.cameraState = state;
     retry.hidden = !canRetry;
+    retry.textContent = state === CAMERA_STATE.ERROR ? '重新加载手势识别' : '尝试使用摄像头';
     const prompts = {
-      [CAMERA_STATE.INITIALIZING]: '正在加载手势识别…',
+      [CAMERA_STATE.INITIALIZING]: '正在加载手势识别，首次使用请稍候…',
       [CAMERA_STATE.WAITING_FOR_FRAMES]: '正在接收摄像头画面…',
       [CAMERA_STATE.PAUSED]: '切回此页面即可继续手势探索',
       [CAMERA_STATE.PERMISSION_REQUIRED]: awaitingActivation
@@ -67,7 +68,7 @@ export function mountPortal(root, finish) {
     if (reason === 'policy' || reason === 'unsupported') return '当前预览无法调用摄像头，可用系统浏览器打开';
     if (reason === 'insecure') return '此网址不支持摄像头，可改用本地预览地址';
     if (reason === 'no-frames') return '已授权，但摄像头未送来画面';
-    if (reason === 'tracker-timeout') return '手势识别加载超时 · 可拖动探索银河';
+    if (reason === 'tracker-timeout') return '手势识别加载超时，可重试或用鼠标探索';
     if (reason === 'ended') return '摄像头已断开 · 可拖动探索银河';
     if (errorName === 'NotFoundError') return '没有找到摄像头 · 可拖动探索银河';
     if (errorName === 'NotReadableError') return '无法打开摄像头，检查它是否被其他应用占用';

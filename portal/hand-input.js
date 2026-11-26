@@ -13,7 +13,7 @@ export const CAMERA_STATE = Object.freeze({
   ERROR: 'ERROR'
 });
 
-const STARTUP_TIMEOUTS = {permissionMs: 6000, trackerMs: 22000, framesMs: 4000};
+const STARTUP_TIMEOUTS = {permissionMs: 6000, trackerMs: 120000, framesMs: 4000};
 
 const emptyGesture = () => ({type: 'NO_HAND', stableMs: 0, scale: null});
 
@@ -87,6 +87,7 @@ export function createHandInput({
 
   function fail(state, detail) {
     release();
+    if (state === CAMERA_STATE.ERROR && ['tracker', 'tracker-timeout'].includes(detail?.reason)) retryAllowed = !retried;
     status(state, detail);
   }
 
@@ -286,7 +287,20 @@ export function createHandInput({
     stageTimeout = setTimeout(() => fail(CAMERA_STATE.ERROR, {reason: 'tracker-timeout'}), startupTimeouts.trackerMs);
     trackerLifetime = new AbortController();
     try {
-      const loaded = await loadTracker(trackerLifetime.signal);
+      const signal = trackerLifetime.signal;
+      // Bound even a loader that doesn't reject its own promise when aborted.
+      const loaded = await new Promise((resolve, reject) => {
+        const aborted = () => reject(signal.reason ?? new DOMException('Tracker stopped', 'AbortError'));
+        signal.addEventListener('abort', aborted, {once: true});
+        Promise.resolve().then(() => loadTracker(signal)).then(loaded => {
+          signal.removeEventListener('abort', aborted);
+          if (signal.aborted) { loaded.close(); return; }
+          resolve(loaded);
+        }, error => {
+          signal.removeEventListener('abort', aborted);
+          reject(error);
+        });
+      });
       if (stopped || stream !== acquired) {
         loaded.close();
         return;
@@ -295,8 +309,8 @@ export function createHandInput({
       tracker = loaded;
       minimumInterval = 1000 / (tracker.mode === 'main' ? Math.min(12, config.framesPerSecond) : config.framesPerSecond);
       void resume();
-    } catch {
-      if (!stopped && stream === acquired) fail(CAMERA_STATE.ERROR, {reason: 'tracker'});
+    } catch (error) {
+      if (!stopped && stream === acquired) fail(CAMERA_STATE.ERROR, {reason: error.name === 'TimeoutError' ? 'tracker-timeout' : 'tracker'});
     }
   }
 

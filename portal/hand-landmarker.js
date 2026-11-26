@@ -2,6 +2,7 @@ import {describePalm} from './gesture-motion.js';
 
 const NORMAL_FRAME_EDGE = 640;
 const ECONOMICAL_FRAME_EDGE = 384;
+const WORKER_STARTUP_TIMEOUT_MS = 105000;
 
 function frameSize(width, height, edge) {
   const scale = Math.min(1, edge / Math.max(width, height));
@@ -26,18 +27,19 @@ function openWorker(signal) {
   const worker = new Worker(new URL('./hand-worker.js', import.meta.url));
   let pending, watchdog, timing, closed = false;
   let edge = NORMAL_FRAME_EDGE;
-  const close = () => {
+  const close = (reason) => {
     if (closed) return;
     closed = true;
     clearTimeout(watchdog);
     worker.terminate();
     signal.removeEventListener('abort', close);
-    pending?.reject(new Error('Hand tracker stopped'));
+    pending?.reject(reason instanceof Error || reason instanceof DOMException ? reason : new Error('Hand tracker stopped'));
     pending = undefined;
   };
 
   const ready = new Promise((resolve, reject) => { pending = {resolve, reject}; });
-  watchdog = setTimeout(close, 8000);
+  // A cold cache must download the WASM and model before the worker can be ready.
+  watchdog = setTimeout(() => close(new DOMException('Hand tracker startup timed out', 'TimeoutError')), WORKER_STARTUP_TIMEOUT_MS);
   worker.onmessage = ({data}) => {
     clearTimeout(watchdog);
     const request = pending;
@@ -91,7 +93,11 @@ function openWorker(signal) {
 export async function openHandTracker(signal) {
   if (typeof Worker === 'function' && typeof createImageBitmap === 'function'
     && typeof OffscreenCanvas === 'function') {
-    try { return await openWorker(signal); } catch { signal.throwIfAborted(); }
+    try { return await openWorker(signal); } catch (error) {
+      signal.throwIfAborted();
+      // Restarting the same large downloads on the main thread cannot fix a slow network.
+      if (error.name === 'TimeoutError') throw error;
+    }
   }
 
   signal.throwIfAborted();
